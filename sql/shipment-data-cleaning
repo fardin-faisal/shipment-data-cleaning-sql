@@ -1,0 +1,487 @@
+-- ============================================================================
+-- STEP 1: CREATE A CLEAN WORKING TABLE
+-- ============================================================================
+
+-- # Step 1.1: Create the table without data
+CREATE TABLE cleaned_shipments
+LIKE shipment_db.raw_shipments;
+
+-- Then insert data
+INSERT cleaned_shipments
+SELECT *
+FROM raw_shipments;
+ 
+-- Check the table
+SELECT *
+FROM cleaned_shipments;
+
+
+-- # Step 1.2: Create table by copying all data
+CREATE TABLE cleaned_shipments2 AS 
+SELECT * FROM raw_shipments;
+
+-- Check the table
+SELECT *
+FROM cleaned_shipments2;
+
+
+-- ============================================================================
+-- STEP 2: CLEANING STARTS
+-- ============================================================================
+
+-- STEP 2.1: Remove Duplicates
+-- ----------------------------------------------------------------------------
+
+-- Find and List Duplicate IDs (With Counts)
+SELECT shipment_id,
+       COUNT(*) AS total_occurance
+FROM cleaned_shipments2
+GROUP BY shipment_id
+HAVING total_occurance > 1;
+-- Output: No duplicate IDs, all are unique
+
+-- Let's check for identical origin_warehouse, destination_city, carrier, ship_date, weight_kg, freight_cost
+WITH CTE AS (
+    SELECT 
+        *,
+        ROW_NUMBER() OVER(
+            PARTITION BY origin_warehouse, destination_city, carrier, ship_date, weight_kg, freight_cost
+            ORDER BY shipment_id
+        ) AS row_num
+    FROM cleaned_shipments2
+)
+SELECT *
+FROM CTE
+WHERE row_num > 1;
+
+-- Or alternative check:
+SELECT * 
+FROM cleaned_shipments2
+WHERE shipment_id IN (
+    SELECT shipment_id 
+    FROM ( 
+        SELECT shipment_id,
+            ROW_NUMBER() OVER(
+                PARTITION BY origin_warehouse, destination_city, carrier, ship_date, weight_kg, freight_cost
+                ORDER BY shipment_id
+            ) AS row_num
+        FROM cleaned_shipments2
+    ) AS subquery
+    WHERE row_num > 1
+);
+
+-- Let's delete duplicates
+DELETE FROM cleaned_shipments2
+WHERE shipment_id IN (
+    SELECT shipment_id 
+    FROM ( 
+        SELECT shipment_id,
+            ROW_NUMBER() OVER(
+                PARTITION BY origin_warehouse, destination_city, carrier, ship_date, weight_kg, freight_cost
+                ORDER BY shipment_id
+            ) AS row_num
+        FROM cleaned_shipments2
+    ) AS subquery
+    WHERE row_num > 1
+);
+
+
+-- STEP 2.2: Standardizing the Data
+-- ----------------------------------------------------------------------------
+
+-- ** Remove Trailing / Leading Whitespace **
+
+-- # For "origin_warehouse"
+-- Checking if any trailing / leading whitespace available
+SELECT DISTINCT origin_warehouse
+FROM cleaned_shipments2;
+-- Output: Available
+
+-- Let's remove using TRIM() & update table
+SELECT origin_warehouse, 
+       TRIM(origin_warehouse)
+FROM cleaned_shipments2;
+
+SET SQL_SAFE_UPDATES = 0;
+UPDATE cleaned_shipments2
+SET origin_warehouse = TRIM(origin_warehouse);
+-- Output: Successful
+
+-- # For "destination_city" 
+SELECT destination_city, 
+       TRIM(destination_city) 
+FROM cleaned_shipments2;
+
+UPDATE cleaned_shipments2
+SET destination_city = TRIM(destination_city);
+-- Output: Successful
+
+-- # For "destination_state" 
+SELECT destination_state, 
+       TRIM(destination_state) 
+FROM cleaned_shipments2;
+-- Output: No trailing / leading whitespace available
+
+-- # For "carrier" 
+SELECT * 
+FROM cleaned_shipments2;
+
+SELECT carrier, 
+       TRIM(carrier) 
+FROM cleaned_shipments2;
+
+UPDATE cleaned_shipments2
+SET carrier = TRIM(carrier);
+-- Output: Successful
+
+-- For the remaining columns also, no trailing / leading whitespace available.
+
+-- # We can do it all at once. Let's try it with the "cleaned_shipments" table
+SELECT shipment_id,
+       TRIM(origin_warehouse),
+       TRIM(destination_city),
+       TRIM(destination_state),
+       TRIM(carrier)
+FROM cleaned_shipments;
+ 
+UPDATE cleaned_shipments
+SET origin_warehouse = TRIM(origin_warehouse),
+    destination_city = TRIM(destination_city),
+    destination_state = TRIM(destination_state),
+    carrier = TRIM(carrier);
+ 
+SELECT * 
+FROM cleaned_shipments;
+
+
+-- ** Standardize Text Formatting **
+
+-- # For "origin_warehouse"
+SELECT origin_warehouse, 
+       CONCAT(
+           UPPER(SUBSTRING(origin_warehouse, 1, 1)), 
+           LOWER(SUBSTRING(origin_warehouse, 2, 9)), 
+           UPPER(RIGHT(origin_warehouse, 1))
+       )
+FROM cleaned_shipments2;
+
+-- Or alternative:
+SELECT origin_warehouse,
+       CONCAT(
+           'Warehouse ',
+           UPPER(RIGHT(origin_warehouse, 1))
+       )
+FROM cleaned_shipments2;
+
+-- Now update
+SET SQL_SAFE_UPDATES = 0;
+UPDATE cleaned_shipments2
+SET origin_warehouse = CONCAT(
+    UPPER(SUBSTRING(origin_warehouse, 1, 1)), 
+    LOWER(SUBSTRING(origin_warehouse, 2, 9)), 
+    UPPER(RIGHT(origin_warehouse, 1))
+);
+
+-- Check
+SELECT origin_warehouse
+FROM cleaned_shipments2;
+
+-- # For "destination_city"
+SELECT DISTINCT destination_city
+FROM cleaned_shipments2;
+
+SELECT destination_city,
+       CASE
+           WHEN destination_city NOT LIKE '% %' THEN 
+               CONCAT(
+                   UPPER(LEFT(destination_city, 1)),
+                   LOWER(SUBSTRING(destination_city, 2))
+               )
+           ELSE 
+               CONCAT(
+                   UPPER(LEFT(SUBSTRING_INDEX(destination_city, ' ', 1), 1)),
+                   LOWER(SUBSTRING(SUBSTRING_INDEX(destination_city, ' ', 1), 2)),
+                   ' ',
+                   UPPER(LEFT(SUBSTRING_INDEX(destination_city, ' ', -1), 1)),
+                   LOWER(SUBSTRING(SUBSTRING_INDEX(destination_city, ' ', -1), 2))
+               )
+       END
+FROM cleaned_shipments2;
+
+UPDATE cleaned_shipments2
+SET destination_city = CASE
+    WHEN destination_city NOT LIKE '% %' THEN 
+        CONCAT(
+            UPPER(LEFT(destination_city, 1)),
+            LOWER(SUBSTRING(destination_city, 2))
+        )
+    ELSE 
+        CONCAT(
+            UPPER(LEFT(SUBSTRING_INDEX(destination_city, ' ', 1), 1)),
+            LOWER(SUBSTRING(SUBSTRING_INDEX(destination_city, ' ', 1), 2)),
+            ' ',
+            UPPER(LEFT(SUBSTRING_INDEX(destination_city, ' ', -1), 1)),
+            LOWER(SUBSTRING(SUBSTRING_INDEX(destination_city, ' ', -1), 2))
+        )
+    END;
+    
+-- Check
+SELECT destination_city
+FROM cleaned_shipments2;
+
+-- # For "destination_state"
+SELECT DISTINCT destination_state
+FROM cleaned_shipments2;
+
+SELECT destination_state,
+       CONCAT(
+           UPPER(destination_state) 
+       )
+FROM cleaned_shipments2;
+
+UPDATE cleaned_shipments2
+SET destination_state = CONCAT(
+    UPPER(destination_state) 
+);
+
+-- Check
+SELECT destination_state
+FROM cleaned_shipments2;
+
+
+-- # For "carrier"
+SELECT carrier
+FROM cleaned_shipments2;
+
+SELECT carrier,
+       CASE
+           WHEN LOWER(carrier) LIKE '%fastfreight%' THEN 'FastFreight'
+           WHEN LOWER(carrier) LIKE '%quickship%' THEN 'QuickShip'
+           WHEN LOWER(carrier) LIKE '%speedyhaul%' THEN 'SpeedyHaul'
+           ELSE carrier
+       END
+FROM cleaned_shipments2;
+
+UPDATE cleaned_shipments2
+SET carrier = CASE
+    WHEN LOWER(carrier) LIKE '%fastfreight%' THEN 'FastFreight'
+    WHEN LOWER(carrier) LIKE '%quickship%' THEN 'QuickShip'
+    WHEN LOWER(carrier) LIKE '%speedyhaul%' THEN 'SpeedyHaul'
+    ELSE carrier
+END;
+
+-- # For "shipment_status"
+SELECT shipment_status
+FROM cleaned_shipments2;
+
+SELECT shipment_status,
+       CASE
+           WHEN shipment_status NOT LIKE '% %' THEN 
+               CONCAT(
+                   UPPER(LEFT(shipment_status, 1)),
+                   LOWER(SUBSTRING(shipment_status, 2))
+               )
+           ELSE 
+               CONCAT(
+                   UPPER(LEFT(SUBSTRING_INDEX(shipment_status, ' ', 1), 1)),
+                   LOWER(SUBSTRING(SUBSTRING_INDEX(shipment_status, ' ', 1), 2)),
+                   ' ',
+                   UPPER(LEFT(SUBSTRING_INDEX(shipment_status, ' ', -1), 1)),
+                   LOWER(SUBSTRING(SUBSTRING_INDEX(shipment_status, ' ', -1), 2))
+               )
+       END
+FROM cleaned_shipments2;
+
+UPDATE cleaned_shipments2
+SET shipment_status = CASE
+    WHEN shipment_status NOT LIKE '% %' THEN 
+        CONCAT(
+            UPPER(LEFT(shipment_status, 1)),
+            LOWER(SUBSTRING(shipment_status, 2))
+        )
+    ELSE 
+        CONCAT(
+            UPPER(LEFT(SUBSTRING_INDEX(shipment_status, ' ', 1), 1)),
+            LOWER(SUBSTRING(SUBSTRING_INDEX(shipment_status, ' ', 1), 2)),
+            ' ',
+            UPPER(LEFT(SUBSTRING_INDEX(shipment_status, ' ', -1), 1)),
+            LOWER(SUBSTRING(SUBSTRING_INDEX(shipment_status, ' ', -1), 2))
+        )
+    END;
+    
+    
+-- # For "damage_reported"
+SELECT damage_reported
+FROM cleaned_shipments2;
+
+SELECT damage_reported,
+       CONCAT(
+           UPPER(LEFT(damage_reported, 1)),
+           LOWER(SUBSTRING(damage_reported, 2))
+       )
+FROM cleaned_shipments2;
+
+UPDATE cleaned_shipments2
+SET damage_reported = CONCAT(
+    UPPER(LEFT(damage_reported, 1)),
+    LOWER(SUBSTRING(damage_reported, 2))
+);
+
+
+-- STEP 2.3: Handle Null / Blanks
+-- ----------------------------------------------------------------------------
+SELECT *
+FROM cleaned_shipments2;
+
+-- # For "destination_city"
+SELECT shipment_id, destination_city
+FROM cleaned_shipments2
+WHERE destination_city IS NULL OR destination_city = '' OR destination_city = 'NULL';
+
+UPDATE cleaned_shipments2
+SET destination_city = NULL
+WHERE destination_city = '' OR destination_city = 'NULL';
+
+
+-- # For "ship_date"
+SELECT shipment_id, ship_date
+FROM cleaned_shipments2
+WHERE ship_date IS NULL OR ship_date = '' OR ship_date = 'NULL';
+
+UPDATE cleaned_shipments2
+SET ship_date = NULL
+WHERE ship_date = '' OR ship_date = 'NULL';
+
+
+-- # For "delivery_date"
+SELECT shipment_id, delivery_date
+FROM cleaned_shipments2
+WHERE delivery_date IS NULL OR delivery_date = '' OR delivery_date = 'NULL';
+
+UPDATE cleaned_shipments2
+SET delivery_date = NULL
+WHERE delivery_date = '' OR delivery_date = 'NULL';
+
+
+-- # For "freight_cost"
+SELECT shipment_id, freight_cost
+FROM cleaned_shipments2
+WHERE freight_cost IS NULL OR freight_cost = '' OR freight_cost = 'NULL';
+
+UPDATE cleaned_shipments2
+SET freight_cost = NULL
+WHERE freight_cost = '' OR freight_cost = 'NULL';
+
+
+-- STEP 2.4: Fixing Negative and Suspicious Numeric Values
+-- ----------------------------------------------------------------------------
+-- For 'weight_kg'
+SELECT shipment_id, weight_kg,
+       CASE
+           WHEN weight_kg < 0 THEN ABS(weight_kg)
+           WHEN weight_kg = 0 THEN NULL
+           ELSE weight_kg
+       END
+FROM cleaned_shipments2;
+
+SET SQL_SAFE_UPDATES = 0;
+UPDATE cleaned_shipments2
+SET weight_kg = CASE
+    WHEN weight_kg < 0 THEN ABS(weight_kg)
+    WHEN weight_kg = 0 THEN NULL
+    ELSE weight_kg
+END;
+
+
+-- STEP 2.5: Date Formatting
+-- ---------------------------------------------------------------------------- 
+
+SELECT * 
+FROM cleaned_shipments2;
+
+-- For 'ship_date'
+SELECT shipment_id, `ship_date`,
+       COALESCE(
+           str_to_date(`ship_date`, '%m/%d/%Y'),
+           str_to_date(`ship_date`, '%Y-%m-%d'),
+           str_to_date(`ship_date`, '%Y/%m/%d'),
+           str_to_date(`ship_date`, '%b %d %Y'),
+           str_to_date(`ship_date`, '%M %d %Y')
+       )
+FROM cleaned_shipments2;
+
+-- Got error while updating. Effective for single type date formatting
+UPDATE cleaned_shipments2
+SET ship_date = COALESCE(
+    str_to_date(`ship_date`, '%m/%d/%Y'),
+    str_to_date(`ship_date`, '%Y-%m-%d'),
+    str_to_date(`ship_date`, '%Y/%m/%d'),
+    str_to_date(`ship_date`, '%b %d %Y'),
+    str_to_date(`ship_date`, '%M %d %Y')
+);
+
+-- Another way for multiple type date format changing to one format
+SELECT shipment_id, ship_date,
+       CASE
+           WHEN ship_date LIKE '%/%/%' AND SUBSTRING_INDEX(ship_date, '/', 1) <= 12
+               THEN str_to_date(ship_date, '%m/%d/%Y')
+           WHEN ship_date LIKE '%/%/%' AND LENGTH(SUBSTRING_INDEX(ship_date, '/', 1)) = 4
+               THEN str_to_date(ship_date, '%Y/%m/%d')
+           WHEN ship_date LIKE '___ % %' 
+               THEN STR_TO_DATE(ship_date, '%b %d %Y')
+           WHEN ship_date LIKE '% % %' AND ship_date NOT LIKE '___ % %' 
+               THEN STR_TO_DATE(ship_date, '%M %d %Y')
+           ELSE ship_date
+       END
+FROM cleaned_shipments2;
+
+UPDATE cleaned_shipments2
+SET ship_date = CASE
+    WHEN ship_date LIKE '%/%/%' AND SUBSTRING_INDEX(ship_date, '/', 1) <= 12
+        THEN str_to_date(ship_date, '%m/%d/%Y')
+    WHEN ship_date LIKE '%/%/%' AND LENGTH(SUBSTRING_INDEX(ship_date, '/', 1)) = 4
+        THEN str_to_date(ship_date, '%Y/%m/%d')
+    WHEN ship_date LIKE '___ % %' 
+        THEN STR_TO_DATE(ship_date, '%b %d %Y')
+    WHEN ship_date LIKE '% % %' AND ship_date NOT LIKE '___ % %' 
+        THEN STR_TO_DATE(ship_date, '%M %d %Y')
+    ELSE ship_date
+END;
+
+
+-- For 'delivery_date'
+SELECT shipment_id, delivery_date,
+       CASE
+           WHEN delivery_date LIKE '%/%/%' AND SUBSTRING_INDEX(delivery_date, '/', 1) <= 12
+               THEN str_to_date(delivery_date, '%m/%d/%Y')
+           WHEN delivery_date LIKE '%/%/%' AND LENGTH(SUBSTRING_INDEX(delivery_date, '/', 1)) = 4
+               THEN str_to_date(delivery_date, '%Y/%m/%d')
+           WHEN delivery_date LIKE '___ % %' 
+               THEN STR_TO_DATE(delivery_date, '%b %d %Y')
+           WHEN delivery_date LIKE '% % %' AND delivery_date NOT LIKE '___ % %' 
+               THEN STR_TO_DATE(delivery_date, '%M %d %Y')
+           ELSE delivery_date
+       END
+FROM cleaned_shipments2;
+
+UPDATE cleaned_shipments2
+SET ship_date = CASE
+    WHEN delivery_date LIKE '%/%/%' AND SUBSTRING_INDEX(delivery_date, '/', 1) <= 12
+        THEN str_to_date(delivery_date, '%m/%d/%Y')
+    WHEN delivery_date LIKE '%/%/%' AND LENGTH(SUBSTRING_INDEX(delivery_date, '/', 1)) = 4
+        THEN str_to_date(delivery_date, '%Y/%m/%d')
+    WHEN delivery_date LIKE '___ % %' 
+        THEN STR_TO_DATE(delivery_date, '%b %d %Y')
+    WHEN delivery_date LIKE '% % %' AND delivery_date NOT LIKE '___ % %' 
+        THEN STR_TO_DATE(delivery_date, '%M %d %Y')
+    ELSE delivery_date
+END;
+
+
+-- STEP 2.6: Advanced Data Cleaning (Detecting Outliers with IQR Method)
+-- ----------------------------------------------------------------------------
+-- Will learn soon
+
+-- Final dataset
+SELECT * 
+FROM cleaned_shipments2;
